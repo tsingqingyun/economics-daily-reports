@@ -2,7 +2,8 @@
 set -u
 setopt NULL_GLOB
 
-PROJECT="${ECONOMICS_PROJECT:-/Users/niejingchen/Documents/Update}"
+SCRIPT_DIR="${0:A:h}"
+PROJECT="${ECONOMICS_PROJECT:-${SCRIPT_DIR:h}}"
 PYTHON="/usr/bin/python3"
 PUBLISH_ROOT="${ECONOMICS_PUBLISH_ROOT:-$PROJECT/.github-publish/economics-daily-reports}"
 REMOTE_URL="${ECONOMICS_REMOTE_URL:-git@github.com:tsingqingyun/economics-daily-reports.git}"
@@ -210,10 +211,8 @@ report_count=$(find "$REPORTS_ROOT" -type f -name '*.md' | wc -l | tr -d ' ')
 content_changed=0
 if ! git -C "$PUBLISH_ROOT" diff --cached --quiet; then
   content_changed=1
-  git -C "$PUBLISH_ROOT" config user.name >/dev/null 2>&1 \
-    || git -C "$PUBLISH_ROOT" config user.name "Economics Daily Bot"
-  git -C "$PUBLISH_ROOT" config user.email >/dev/null 2>&1 \
-    || git -C "$PUBLISH_ROOT" config user.email "24307130136@m.fudan.edu.cn"
+  git -C "$PUBLISH_ROOT" config user.name "Economics Daily Bot"
+  git -C "$PUBLISH_ROOT" config user.email "economics-daily-bot@users.noreply.github.com"
 
   commit_date=$(/bin/date "+%Y-%m-%d")
   git -C "$PUBLISH_ROOT" commit -m "daily: $commit_date economics reports" \

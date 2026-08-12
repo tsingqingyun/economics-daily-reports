@@ -1,7 +1,8 @@
 #!/bin/zsh
 set -u
 
-PROJECT="/Users/niejingchen/Documents/Update"
+SCRIPT_DIR="${0:A:h}"
+PROJECT="${ECONOMICS_PROJECT:-${SCRIPT_DIR:h}}"
 PYTHON="/usr/bin/python3"
 UPDATE_SCRIPT="$PROJECT/scripts/update_economics_flow.py"
 STATE_DIR="$PROJECT/state"
