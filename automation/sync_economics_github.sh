@@ -135,31 +135,16 @@ PY
 fi
 
 copied=0
-for source in "$PROJECT"/30_Updates/????-??-??\ 经济投资简报*.md; do
+for source in "$PROJECT"/30_Updates/????-??-??\ 经济投资简报.md; do
   base=${source:t}
   year=${base%%-*}
   destination_dir="$REPORTS_ROOT/$year"
   mkdir -p "$destination_dir"
-  stem=${base%.md}
-  identical=0
-  for existing in "$destination_dir/$stem.md" "$destination_dir/$stem-v"*.md; do
-    if [ -f "$existing" ] && cmp -s "$source" "$existing"; then
-      identical=1
-      break
-    fi
-  done
-  if [ "$identical" -eq 1 ]; then
+  destination="$destination_dir/$base"
+  if [ -f "$destination" ] && cmp -s "$source" "$destination"; then
     continue
   fi
-
-  destination="$destination_dir/$base"
-  if [ -e "$destination" ]; then
-    version=2
-    while [ -e "$destination_dir/$stem-v$version.md" ]; do
-      version=$((version + 1))
-    done
-    destination="$destination_dir/$stem-v$version.md"
-  fi
+  # Keep one canonical file per date. Git history preserves every prior revision.
   cp "$source" "$destination" || fail_sync "Cannot copy report: $source"
   copied=$((copied + 1))
 done
@@ -188,7 +173,7 @@ raw = subprocess.check_output(
 )
 paths = [item.decode("utf-8") for item in raw.split(b"\0") if item]
 report_pattern = re.compile(
-    r"^reports/[0-9]{4}/[0-9]{4}-[0-9]{2}-[0-9]{2} 经济投资简报(?: [0-9]+|-v[0-9]+)?\.md$"
+    r"^reports/[0-9]{4}/[0-9]{4}-[0-9]{2}-[0-9]{2} 经济投资简报\.md$"
 )
 allowed_automation = {
     "automation/update_economics_flow.py",

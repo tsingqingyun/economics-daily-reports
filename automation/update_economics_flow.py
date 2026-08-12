@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,37 @@ def clean_text(value: str | None) -> str:
     value = html.unescape(value)
     value = re.sub(r"\s+", " ", value).strip()
     return value
+
+
+def parse_published_datetime(value: str | None) -> dt.datetime | None:
+    """Parse common RSS/Atom timestamps into an aware datetime."""
+    value = clean_text(value)
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed
+
+
+def published_date(value: str | None) -> str:
+    parsed = parse_published_datetime(value)
+    return parsed.date().isoformat() if parsed else clean_text(value) or "日期未提供"
+
+
+def summary_excerpt(value: str | None, max_len: int = 420) -> str:
+    summary = clean_text(value)
+    if not summary or summary.lower().strip(" ]>.") == "full text":
+        return "信息源未提供可用摘要，请通过原始链接核对完整发布内容。"
+    if len(summary) <= max_len:
+        return summary
+    return summary[: max_len - 1].rstrip() + "…"
 
 
 def slugify(value: str, max_len: int = 90) -> str:
@@ -223,6 +255,99 @@ def concept_links(
     return links or [default_concept]
 
 
+def investment_takeaway(item: dict[str, Any]) -> str:
+    """Return a deterministic, non-prescriptive interpretation for the digest."""
+    haystack = f"{item.get('title', '')} {item.get('summary', '')}".lower()
+    if any(
+        term in haystack
+        for term in ("cpi", "inflation", "consumer price index", "pce price", "price index")
+    ):
+        return (
+            "通胀信号会影响实际利率、政策路径与债券久期判断；应与工资、通胀预期和核心分项交叉验证，"
+            "单次读数不足以触发交易。"
+        )
+    if any(term in haystack for term in ("fomc", "federal funds", "interest rate", "treasury", "yield", "bond")):
+        return (
+            "重点核对政策利率路径、金融条件和期限溢价是否改变；只有当组合久期或再平衡阈值被触发时才行动，"
+            "不根据一次声明追逐市场。"
+        )
+    if any(term in haystack for term in ("gdp", "employment", "unemployment", "payroll", "wage", "productivity")):
+        return (
+            "该信号用于判断增长、就业与通胀的组合是否改变；应与消费、收入和金融条件一起观察，"
+            "确认趋势后再更新资产配置假设。"
+        )
+    if any(term in haystack for term in ("credit", "loan", "financing", "debt", "default")):
+        return (
+            "融资可得性变化可能领先影响企业投资和就业；需要结合信用利差、拖欠率与贷款标准验证，"
+            "不能从单一调查直接推导买卖结论。"
+        )
+    if any(term in haystack for term in ("portfolio", "valuation", "earnings", "risk premium", "asset allocation")):
+        return "把它作为估值或配置假设的输入；只有偏离既定再平衡阈值时才调整组合。"
+    return "把它作为宏观监测信号，等待其他官方指标交叉确认；目前不据此改变长期投资纪律。"
+
+
+def select_review_items(
+    eligible_seen: list[dict[str, Any]],
+    *,
+    limit: int,
+    lookback_days: int,
+) -> list[dict[str, Any]]:
+    """Choose recent high-value seen candidates for an explicitly labelled review."""
+    if limit <= 0:
+        return []
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=max(1, lookback_days))
+    recent: list[dict[str, Any]] = []
+    for item in eligible_seen:
+        parsed = parse_published_datetime(item.get("published"))
+        if parsed is not None and parsed.astimezone(dt.timezone.utc) >= cutoff:
+            recent.append(item)
+
+    def sort_key(item: dict[str, Any]) -> tuple[int, float, str]:
+        parsed = parse_published_datetime(item.get("published"))
+        timestamp = parsed.timestamp() if parsed else 0.0
+        return (int(item.get("score", 0)), timestamp, item.get("title", ""))
+
+    pool = sorted(recent, key=sort_key, reverse=True)
+    chosen: list[dict[str, Any]] = []
+    used_sources: set[str] = set()
+    for prefer_new_source in (True, False):
+        for item in pool:
+            if item in chosen:
+                continue
+            source = item.get("source", "")
+            if prefer_new_source and source in used_sources:
+                continue
+            chosen.append(item)
+            used_sources.add(source)
+            if len(chosen) >= limit:
+                return chosen
+    return chosen
+
+
+def source_statistics(
+    candidates: list[dict[str, Any]],
+    sources: list[dict[str, Any]],
+    source_attempts: dict[str, int],
+    failures: list[str],
+) -> list[dict[str, Any]]:
+    stats = []
+    for source in sources:
+        name = source.get("name", "Unknown source")
+        items = [item for item in candidates if item.get("source") == name]
+        dated = [parse_published_datetime(item.get("published")) for item in items]
+        valid_dates = [value for value in dated if value is not None]
+        stats.append(
+            {
+                "name": name,
+                "status": "failed" if any(failure.startswith(f"{name}:") for failure in failures) else "success",
+                "attempts": source_attempts.get(name, 0),
+                "candidate_count": len(items),
+                "newest_published": max(valid_dates).date().isoformat() if valid_dates else "-",
+            }
+        )
+    return stats
+
+
 def yaml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -293,11 +418,15 @@ def unique_path(path: Path) -> Path:
 def write_update_notes(
     vault: Path,
     selected: list[dict[str, Any]],
+    review_items: list[dict[str, Any]],
     config: dict[str, Any],
     *,
     run_id: str,
+    run_status: str,
     candidate_count: int,
     failures: list[str],
+    source_stats: list[dict[str, Any]],
+    funnel: dict[str, int],
 ) -> list[Path]:
     today = dt.date.today().isoformat()
     item_dir = vault / "30_Updates" / today
@@ -305,7 +434,6 @@ def write_update_notes(
         item_dir.mkdir(parents=True, exist_ok=True)
     digest_title = config.get("digest_title", "经济投资简报")
     written: list[Path] = []
-    run_status = "failed" if failures and candidate_count == 0 else "degraded" if failures else "success"
     digest_lines = [
         "---",
         "type: daily-update",
@@ -315,6 +443,7 @@ def write_update_notes(
         f"status: {run_status}",
         f"candidate_count: {candidate_count}",
         f"selected_count: {len(selected)}",
+        f"review_count: {len(review_items)}",
         f"failed_source_count: {len(failures)}",
         "---",
         "",
@@ -328,11 +457,54 @@ def write_update_notes(
     ]
     if failures:
         digest_lines.extend(["", *[f"  - {failure}" for failure in failures]])
+    healthy_sources = sum(stat["status"] == "success" for stat in source_stats)
+    if failures and candidate_count == 0:
+        conclusion = "所有信息源抓取失败，本期不能据此形成经济判断；自动化将继续按退避策略重试。"
+    elif selected:
+        conclusion = f"采集覆盖正常，本期发现 {len(selected)} 条尚未收录且达到阈值的新信号。"
+    else:
+        conclusion = (
+            "采集覆盖正常，但规则内没有新增高价值条目。这不代表经济环境没有变化；"
+            "本期回顾仍在当前信息源中的近期高分信号，并保持既定投资纪律。"
+        )
     digest_lines.extend(
         [
             "",
-        "## 高价值条目",
-        "",
+            "## 今日结论",
+            "",
+            conclusion,
+            "",
+            "## 信息源健康",
+            "",
+            f"- 成功信息源：{healthy_sources}/{len(source_stats)}",
+            f"- 抓取失败：{len(failures)}",
+            "",
+            "| 信息源 | 状态 | 尝试次数 | 候选数 | 最新发布日期 |",
+            "| --- | --- | ---: | ---: | --- |",
+        ]
+    )
+    for stat in source_stats:
+        digest_lines.append(
+            f"| {stat['name']} | {'正常' if stat['status'] == 'success' else '失败'} | "
+            f"{stat['attempts']} | {stat['candidate_count']} | {stat['newest_published']} |"
+        )
+    digest_lines.extend(
+        [
+            "",
+            "## 筛选漏斗",
+            "",
+            f"- 原始候选：{funnel['raw']}",
+            f"- 无标题跳过：{funnel['invalid']}",
+            f"- 重复跳过：{funnel['duplicate']}",
+            f"- 主题排除：{funnel['excluded']}",
+            f"- 低于阈值（<{funnel['min_score']}）：{funnel['below_threshold']}",
+            f"- 达标但已收录：{funnel['previously_seen']}",
+            f"- 新增达标：{funnel['new_eligible']}",
+            f"- 最终入选：{len(selected)}",
+            f"- 因数量上限截断：{funnel['truncated']}",
+            "",
+            "## 新增高价值条目",
+            "",
         ]
     )
 
@@ -347,12 +519,15 @@ def write_update_notes(
         link_path = f"30_Updates/{today}/{note_path.stem}"
         digest_lines.extend(
             [
-                f"### [[{link_path}|{item['title']}]]",
+                f"### [{item['title']}]({item.get('url', '')})",
                 "",
+                f"- 本地研究笔记：[[{link_path}|打开条目笔记]]",
+                f"- 发布日期：{published_date(item.get('published'))}",
                 f"- Score: {score}",
                 f"- Source: {item.get('source', '')}",
                 f"- Concepts: {concept_line}",
-                f"- URL: {item.get('url', '')}",
+                f"- 核心摘要：{summary_excerpt(item.get('summary'))}",
+                f"- 投资观察：{investment_takeaway(item)}",
                 "",
             ]
         )
@@ -361,15 +536,35 @@ def write_update_notes(
         if failures and candidate_count == 0:
             digest_lines.extend(["> 本次所有信息源均抓取失败，自动化将按退避策略重试。", ""])
         else:
-            digest_lines.extend(["> 本次抓取成功，但没有达到阈值且尚未收录的新条目。", ""])
+            digest_lines.extend(["> 今日无符合条件的新增条目；以下内容均明确标记为历史回顾。", ""])
+
+    if review_items and not (failures and candidate_count == 0):
+        digest_lines.extend(["## 近期重点信号（非今日新增）", ""])
+        for item in review_items:
+            concepts = "、".join(item["concepts"])
+            digest_lines.extend(
+                [
+                    f"### [{item['title']}]({item.get('url', '')})",
+                    f"<!-- review-item:{item['id']} -->",
+                    "",
+                    f"- 发布日期：{published_date(item.get('published'))}",
+                    f"- 来源：{item.get('source', '')}",
+                    f"- 评分：{item['score']}",
+                    f"- 关联主题：{concepts}",
+                    f"- 核心摘要：{summary_excerpt(item.get('summary'))}",
+                    f"- 投资观察：{investment_takeaway(item)}",
+                    "",
+                ]
+            )
 
     digest_lines.extend(
         [
-            "## 复盘",
+            "## 行动与限制",
             "",
-            "- 哪些信息改变了宏观六格？",
-            "- 哪些信息只适合观察，不应触发交易？",
-            "- 是否需要更新 IPS、资产配置或再平衡阈值？",
+            "- 新增条目为 0 时，不因为日报日期变化而制造交易动作。",
+            "- 只有多个独立指标共同改变增长、通胀或金融条件判断，才更新宏观假设。",
+            "- 只有触发既定 IPS 或再平衡阈值，才调整资产配置。",
+            f"- 自动筛选阈值：{funnel['min_score']}；内容用于研究记录，不构成投资建议。",
             "",
         ]
     )
@@ -383,6 +578,7 @@ def write_update_notes(
 def validate_daily_report(
     digest_path: Path,
     selected: list[dict[str, Any]],
+    review_items: list[dict[str, Any]],
     *,
     run_id: str,
     candidate_count: int,
@@ -394,6 +590,7 @@ def validate_daily_report(
         f"run_id: {run_id}",
         f"candidate_count: {candidate_count}",
         f"selected_count: {len(selected)}",
+        f"review_count: {len(review_items)}",
     }
     missing = sorted(line for line in required_lines if line not in content)
     if missing:
@@ -406,6 +603,16 @@ def validate_daily_report(
         expected_link = f"[[30_Updates/{dt.date.today().isoformat()}/{item_path.stem}|"
         if expected_link not in content:
             raise ValueError(f"Daily report is missing item link: {item_path.stem}")
+    selected_ids = {item["id"] for item in selected}
+    review_ids = {item["id"] for item in review_items}
+    if selected_ids & review_ids:
+        raise ValueError("Selected and review item IDs overlap")
+    for item in review_items:
+        marker = f"<!-- review-item:{item['id']} -->"
+        if content.count(marker) != 1:
+            raise ValueError(f"Daily report review marker mismatch: {item['id']}")
+        if not item.get("url") or f"]({item['url']})" not in content:
+            raise ValueError(f"Daily report review URL missing: {item['id']}")
 
 
 def update_index(vault: Path) -> None:
@@ -437,7 +644,10 @@ def run_locked(args: argparse.Namespace, vault: Path) -> int:
         "source_attempts": {},
         "candidate_count": 0,
         "selected_count": 0,
+        "review_count": 0,
         "top_title": "",
+        "display_top_title": "",
+        "display_top_score": None,
         "failures": [],
         "output_path": None,
         "validated": False,
@@ -499,48 +709,73 @@ def run_locked(args: argparse.Namespace, vault: Path) -> int:
     min_score = int(args.min_score or config.get("min_score", 3))
     max_items = int(args.max_items or config.get("max_items_per_run", 20))
     selected = []
-    same_day_fallback = []
-    selected_ids = set()
-    today = dt.date.today().isoformat()
+    eligible_seen = []
+    ranked_ids = set()
+    funnel = {
+        "raw": len(candidates),
+        "invalid": 0,
+        "duplicate": 0,
+        "excluded": 0,
+        "below_threshold": 0,
+        "previously_seen": 0,
+        "new_eligible": 0,
+        "truncated": 0,
+        "min_score": min_score,
+    }
 
     for item in candidates:
         if not item.get("title"):
+            funnel["invalid"] += 1
             continue
         haystack = f"{item.get('title', '')} {item.get('summary', '')}".lower()
         if any(term.lower() in haystack for term in config.get("exclude_terms", [])):
+            funnel["excluded"] += 1
             continue
         ident = item_id(item)
-        if ident in selected_ids:
+        if ident in ranked_ids:
+            funnel["duplicate"] += 1
             continue
+        ranked_ids.add(ident)
         score = score_item(item, ranking_terms)
         if score < min_score:
+            funnel["below_threshold"] += 1
             continue
         item["id"] = ident
         item["score"] = score
         item["concepts"] = concept_links(item, concept_map, default_concept)
         if ident in seen and not args.include_seen:
-            last_included = str(seen[ident].get("last_included") or seen[ident].get("first_seen") or "")
-            if last_included.startswith(today):
-                same_day_fallback.append(item)
-                selected_ids.add(ident)
+            eligible_seen.append(item)
+            funnel["previously_seen"] += 1
             continue
         selected.append(item)
-        selected_ids.add(ident)
+        funnel["new_eligible"] += 1
 
     selected.sort(key=lambda item: item["score"], reverse=True)
-    same_day_fallback.sort(key=lambda item: item["score"], reverse=True)
-    if not selected and same_day_fallback and not args.include_seen:
-        selected = same_day_fallback
     selected = selected[:max_items]
+    funnel["truncated"] = max(0, funnel["new_eligible"] - len(selected))
 
     all_sources_failed = bool(sources) and len(failures) == len(sources)
     run_status = "failed" if all_sources_failed else "degraded" if failures else "success"
+    review_items = []
+    if not selected and not all_sources_failed and not args.include_seen:
+        review_items = select_review_items(
+            eligible_seen,
+            limit=int(config.get("review_items_when_empty", 4)),
+            lookback_days=int(config.get("review_lookback_days", 45)),
+        )
+    source_stats = source_statistics(candidates, sources, source_attempts, failures)
+    display_top = selected[0] if selected else review_items[0] if review_items else None
     run_record.update(
         stage="ranking",
         source_attempts=source_attempts,
         candidate_count=len(candidates),
         selected_count=len(selected),
+        review_count=len(review_items),
         top_title=selected[0]["title"] if selected else "",
+        display_top_title=display_top["title"] if display_top else "",
+        display_top_score=display_top["score"] if display_top else None,
+        funnel=funnel,
+        source_stats=source_stats,
         failures=failures,
     )
 
@@ -597,10 +832,14 @@ def run_locked(args: argparse.Namespace, vault: Path) -> int:
         written = write_update_notes(
             vault,
             selected,
+            review_items,
             config,
             run_id=run_id,
+            run_status=run_status,
             candidate_count=len(candidates),
             failures=failures,
+            source_stats=source_stats,
+            funnel=funnel,
         )
     except OSError as exc:
         return fail_run("write", f"Writing daily report failed: {exc}")
@@ -626,6 +865,7 @@ def run_locked(args: argparse.Namespace, vault: Path) -> int:
         validate_daily_report(
             written[-1],
             selected,
+            review_items,
             run_id=run_id,
             candidate_count=len(candidates),
         )
@@ -654,8 +894,13 @@ def run_locked(args: argparse.Namespace, vault: Path) -> int:
             "last_source_attempts": source_attempts,
             "last_candidate_count": len(candidates),
             "last_selected_count": len(selected),
+            "last_review_count": len(review_items),
             "last_top_title": selected[0]["title"] if selected else "",
             "last_top_score": selected[0]["score"] if selected else None,
+            "last_display_top_title": display_top["title"] if display_top else "",
+            "last_display_top_score": display_top["score"] if display_top else None,
+            "last_funnel": funnel,
+            "last_source_stats": source_stats,
             "last_output_path": str(written[-1]),
             "last_validated": True,
             "last_warnings": [],

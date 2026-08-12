@@ -1,6 +1,8 @@
 {
   "max_items_per_run": 18,
   "min_score": 5,
+  "review_items_when_empty": 4,
+  "review_lookback_days": 45,
   "digest_title": "经济投资简报",
   "digest_tags": ["update", "economics", "investing"],
   "default_concept": "经济学与投资核心知识地图",
