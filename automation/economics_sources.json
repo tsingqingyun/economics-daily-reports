@@ -1,0 +1,92 @@
+{
+  "max_items_per_run": 18,
+  "min_score": 5,
+  "digest_title": "经济投资简报",
+  "digest_tags": ["update", "economics", "investing"],
+  "default_concept": "经济学与投资核心知识地图",
+  "exclude_terms": [
+    "arts and cultural production satellite account",
+    "satellite account"
+  ],
+  "feeds": [
+    {
+      "name": "Federal Reserve - Monetary Policy",
+      "url": "https://www.federalreserve.gov/feeds/press_monetary.xml",
+      "type": "rss",
+      "weight": 5
+    },
+    {
+      "name": "Federal Reserve - Policy Rates",
+      "url": "https://www.federalreserve.gov/feeds/prates.xml",
+      "type": "rss",
+      "weight": 4
+    },
+    {
+      "name": "BLS Latest Numbers",
+      "url": "https://www.bls.gov/feed/bls_latest.rss",
+      "type": "rss",
+      "weight": 5
+    },
+    {
+      "name": "BEA News Releases",
+      "url": "https://apps.bea.gov/rss/rss.xml",
+      "type": "rss",
+      "weight": 5
+    },
+    {
+      "name": "FRED Blog",
+      "url": "https://fredblog.stlouisfed.org/feed/",
+      "type": "rss",
+      "weight": 3
+    }
+  ],
+  "concept_links": {
+    "宏观指标仪表盘": ["gdp", "gross domestic product", "cpi", "inflation", "pce", "payroll", "employment", "unemployment", "wage", "jolts", "retail sales", "productivity"],
+    "债券久期与利率风险": ["federal funds", "interest rate", "yield", "treasury", "bond", "duration", "tips", "policy rate", "fomc"],
+    "资产配置": ["asset allocation", "portfolio", "stocks", "bonds", "cash", "diversification", "rebalancing"],
+    "市场估值与预期收益": ["valuation", "earnings", "expected return", "risk premium", "equity premium", "credit spread", "cape"],
+    "行为金融与投资纪律": ["investor behavior", "sentiment", "panic", "volatility", "risk tolerance"],
+    "个人投资政策声明 IPS": ["fees", "tax", "retirement", "ira", "401", "savings", "debt", "emergency fund"]
+  },
+  "ranking_terms": {
+    "fomc": 6,
+    "federal funds": 6,
+    "interest rate": 5,
+    "inflation": 6,
+    "cpi": 6,
+    "pce": 6,
+    "gdp": 5,
+    "employment": 5,
+    "unemployment": 5,
+    "payroll": 5,
+    "wage": 4,
+    "yield": 4,
+    "treasury": 4,
+    "bond": 3,
+    "credit": 3,
+    "household": 3,
+    "consumer": 3,
+    "productivity": 3,
+    "financial stability": 4,
+    "recession": 4,
+    "risk": 2,
+    "savings bond": 3,
+    "tips": 3,
+    "valuation": 3,
+    "portfolio": 2
+  },
+  "quality_rules": {
+    "prefer": [
+      "官方统计和央行文件",
+      "带发布日期和下一次发布日期的数据",
+      "能更新宏观六格的指标",
+      "影响长期资产配置或现金管理的制度变化"
+    ],
+    "downrank": [
+      "只解释单日涨跌",
+      "无数据来源的预测",
+      "推销具体产品",
+      "把宏观观点直接包装成买卖建议"
+    ]
+  }
+}
